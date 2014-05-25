@@ -746,25 +746,35 @@ drawImage:
     ld a, i
     di
     push af \ push hl \ push de \ push bc
+        ; Check if the image starts with KIMG
         ld b, 4
         ld de, imagesMagicString
 _:
         ld a, (de)
         cp (hl)
+        ; Exit the function when it doesn't match
         jr nz, exitEarly
         inc de
         inc hl
         djnz -_
+
+        ; Bail out when the palette bit is set
+        ; TODO:Support palettes
         ld a, (hl)
         rra
         jr nc, exitEarly_noSupport
+
+        ; Bail out when a compression is set
+        ; TODO:Support compression
         ld b, 3
 _:
         rra
         jr c, exitEarly_noSupport
         djnz -_
-        
-    pop bc \ pop de \ push de \ push bc
+    pop bc \ pop de
+
+    push de \ push bc
+        ; Draw the image
         inc hl
         call drawRawColorImage
 exitEarly:
@@ -844,4 +854,4 @@ drawRawColorImage:
     pop hl \ pop de \ pop bc \ pop af
     call fullScreenWindow
     ret
-    
+
