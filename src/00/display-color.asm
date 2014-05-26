@@ -18,6 +18,8 @@ clipColorRectangle:
 setLcdWindow:
 fullScreenWindow:
 colorSupported:
+drawColorImage:
+drawRawColorImage:
     or 1
     ld a, errUnsupported
     ret
@@ -806,6 +808,7 @@ imagesMagicString:
 drawRawColorImage:
     push af \ push bc \ push de \ push hl
         push hl \ push hl \ pop ix
+            ; Set the LCD window to where the image is to be drawn
             ld l, (ix + 0)
             ld h, (ix + 1)
             push hl
@@ -813,7 +816,7 @@ drawRawColorImage:
                 ld a, (ix + 2)
                 push de
                     ex de, hl
-                    call DEmulA
+                    call DEMulA
                 pop de
                 ex (sp), hl
                 add hl, de
@@ -832,10 +835,11 @@ drawRawColorImage:
             xor a
             or h
             ld b, h
+            ; Jump to the image data
             ex (sp), hl
-            inc hl
-            inc hl
-            inc hl
+            inc hl          ; width + 1
+            inc hl          ; height
+            inc hl          ; image data
             jr z, .noOuterLoop
 .outerLoop:
             push bc
@@ -851,6 +855,63 @@ drawRawColorImage:
         or b
         jr z, $ + 4
         otir
+    pop hl \ pop de \ pop bc \ pop af
+    call fullScreenWindow
+    ret
+
+;; drawColorImage [Color]
+;;  Displays a non-paletted color image to the LCD using
+;;  a callback function.
+;; Inputs:
+;;  IX: Pointer to the callback function
+;;  B: Y coordinate in pixels
+;;  DE: X coordinate in pixels
+;;  HL: Pointer to the width property of the image
+;; Outputs:
+;;  A: errUnsupported if color is unsupported
+;; Notes:
+;;  Does no clipping.
+drawColorImage:
+    push bc \ push de \ push hl \ push ix
+        push bc \ push de \ push ix \ push hl \ pop ix
+            ; Set the LCD window to where the image is to be drawn
+            ; Read the image's width and the height
+            ld l, (ix + 0)
+            ld h, (ix + 1)
+            ld c, (ix + 2)
+            push bc \ push hl
+                ; Calculate the left and right borders
+                add hl, de
+                ex de, hl
+                dec de
+
+                ; Calculate the top and bottom borders
+                ld a, b
+                add a, c
+                ld c, a
+                dec c
+
+                ; Call the function
+                call setLcdWindow
+            pop de \ pop bc
+
+            ; Calculate the total amount of pixels
+            ld a, c
+            call DEMulA
+			ex de, hl
+
+			; Loop until no more data is left
+			dec de
+			ld b, e
+			inc b
+			inc d
+.loop:
+			; Call the callback function
+			jp (ix)
+
+			djnz .loop
+			dec d
+			jp nz, loop
     pop hl \ pop de \ pop bc \ pop af
     call fullScreenWindow
     ret
