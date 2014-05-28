@@ -13,7 +13,7 @@ _unlockFlash:
     ld a, i
 _:  push af
     di
-    ld a, FLASHRWCONTROL_ENABLEWRITE
+    ld a, 1
     nop
     nop
     im 1

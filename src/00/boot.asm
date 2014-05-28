@@ -35,7 +35,7 @@ _:  di
     out (PORT_BANKB), a
 #endif
 
-    ld sp, userMemory ; end of kernel garbage
+    ld sp, kernelGarbage + kernelGarbageSize
 
     call suspendDevice
 ;; reboot [System]
@@ -43,7 +43,7 @@ _:  di
 reboot:
     di
 
-    ld sp, userMemory ; end of kernel garbage
+    ld sp, kernelGarbage + kernelGarbageSize
 
 #ifdef FLASH4MB
     xor a
@@ -196,25 +196,42 @@ test:
     push de
         push hl \ pop de
         ld hl, testString
-        ld bc, testStringEnd - testString
+        ld bc, 0x100
         ldir
     pop de
     call getStreamEntry
-    res 0, (ix + 0xD) ; Mark as not flushed
-    ld a, testStringEnd - testString
-    ld (ix + 3), a   ; Set stream pointer to 3
-    ld (ix + 0xA), a
+    res 0, (ix + FILE_WRITE_FLAGS) ; Mark as not flushed
     xor a
-    ld (ix + 0xB), a
-    ld (ix + 0xC), a ; Set file length to 3
+    ld (ix + FILE_STREAM), a ; Set stream pointer to start of next block
+    ld bc, testStringEnd - testString
+    ld (ix + FILE_WORKING_SIZE), c
+    ld (ix + FILE_WORKING_SIZE + 1), b
+    ld (ix + FILE_WORKING_SIZE + 2), a
+    call advanceBlock
+    ; Write next block
+    call getStreamBuffer
+    push de
+        push hl \ pop de
+        ld hl, testString_block2
+        ld bc, testStringEnd - testString_block2
+        ldir
+    pop de
+    call getStreamEntry
+    res 0, (ix + FILE_WRITE_FLAGS) ; Not flushed
+    ld a, testStringEnd - testString_block2
+    ld (ix + FILE_STREAM), a
     call flush
     call closeStream
     ret
 
 bootFile:
     .db "/bin/init", 0
+castle:
+    .db "/bin/castle", 0
 testFile:
     .db "/var/test", 0
 testString:
-    .db "This file was written at\nruntime!"
+    .db "This file is over 256 bytes. Ramble ramble ramble ramble ramble ramble ramble ramble ramble ramble blah blah blah blah foo foo foo foo bar bar bar bar bar test test test test test test who knew it was so difficult to type 256 bytes worth of junk abcdefgh\n\n"
+testString_block2:
+    .db "256 bytes!"
 testStringEnd:

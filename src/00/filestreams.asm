@@ -189,7 +189,9 @@ _:  pop af
     ret
 .entryFound:
             call findFileEntry
-            call nz, .fileNotFound
+            jp nz, .fileNotFound
+            ; The rest of this code path *only* covers existing files that are being overwritten
+            ; The case of brand-new files is handled in .fileNotFound
             dec d
             ; We can put the stream entry at (iy) and use d as the ID
             push de
@@ -224,7 +226,7 @@ _:  pop af
                 jr nz, .notFinal - 1 ; (-1 adds the inc hl)
                 dec hl
 .final:
-                set 7, (iy)
+                set 7, (iy + FILE_FLAGS)
                 ld a, (hl)
                 ld (iy + FILE_FINAL_LENGTH), a
                 jr .notFinal
@@ -233,11 +235,11 @@ _:  pop af
                 inc hl
                 ld a, (hl)
                 ld (iy + FILE_FINAL_LENGTH), a ; Length of final block
-                dec hl \ dec hl ; Move to section ID
-                ld b, (hl)
-                ld (iy + FILE_SECTION_ID), b
-                dec hl \ ld c, (hl)
-                ld (iy + FILE_SECTION_ID + 1), c
+                dec hl \ dec hl \ dec hl ; Move to section ID
+                ld c, (hl)
+                ld (iy + FILE_SECTION_ID), c
+                dec hl \ ld b, (hl)
+                ld (iy + FILE_SECTION_ID + 1), b
                 ; Section ID in BC
                 call populateStreamBuffer
                 ; Populate the previous section, which is 0xFFFF for new streams
@@ -252,30 +254,12 @@ _:  pop af
             pop ix
             pop de
             push af
-                 xor a
-                 cp (iy + FILE_ENTRY_PAGE)
-                 jr z, _ ; Skip file entry for new files
-            pop af \ push af
                  ; Load file entry info
                  ld (iy + FILE_ENTRY_PAGE), a
                  ld (iy + FILE_ENTRY_PTR), l
                  ld (iy + FILE_ENTRY_PTR + 1), h
-_:               ld a, 1 ; Stream is flushed
+                 ld a, 1 ; Stream is flushed
                  ld (iy + FILE_WRITE_FLAGS), a ; Set stream write flags (TODO: Move flags around)
-                 ; Working file size
-                 ld a, 0xFF
-                 cp (iy + FILE_WORKING_SIZE)
-                 jr nz, _
-                 cp (iy + FILE_WORKING_SIZE + 1)
-                 jr nz, _
-                 ; This is a brand-new file
-            pop af
-            xor a
-            ld (iy + FILE_WORKING_SIZE), a
-            ld (iy + FILE_WORKING_SIZE + 1), a
-            ld (iy + FILE_WORKING_SIZE + 2), a
-            jr ++_
-_:          ; This is an existing file, load the existing size from the entry
             pop af
             setBankA
             ld bc, 6
@@ -287,6 +271,7 @@ _:          ; This is an existing file, load the existing size from the entry
             ld (iy + FILE_WORKING_SIZE + 1), a
             dec hl \ ld a, (hl)
             ld (iy + FILE_WORKING_SIZE + 2), a
+.done:
 _:      pop bc
         pop iy
     pop af
@@ -299,6 +284,7 @@ _:  pop af
 .fileNotFound:
     push de
     push af
+        ; Set up some important parts of the file entry first
         ex de, hl
         call stringLength
         inc bc
@@ -311,13 +297,52 @@ _:  pop af
              ldir
         pop de
 
+        ; FILE_ENTRY_PAGE and FILE_ENTRY_PTR are not important when working with brand-new files
+        ; We use them instead to save the file name to memory so we can use it later.
+        ; FILE_ENTRY_PAGE set to zero indicates this special case.
         xor a
         ld (iy + FILE_ENTRY_PAGE), a
         ld (iy + FILE_ENTRY_PTR), e
-        ld (iy + FILE_ENTRY_PTR + 1), d ; Set up special case file entry for new files
+        ld (iy + FILE_ENTRY_PTR + 1), d
     pop af
+    ; Now we just have to populate the rest of this file handle
+    push ix
+        call getCurrentThreadId
+        and 0b111111
+        or 0b01000000 ; Set writable
+        ld (iy + FILE_FLAGS), a ; Flags & owner
+        ; Create a buffer
+        ld bc, KFS_BLOCK_SIZE
+        ld a, 1
+        call calloc
+        jp nz, .outOfMemory
+        push ix \ pop bc
+        ld (iy + FILE_BUFFER), c ; Buffer
+        ld (iy + FILE_BUFFER + 1), b
+
+        xor a
+        ld (iy + FILE_FINAL_LENGTH), a
+        set 7, (iy + FILE_FLAGS) ; Set "final block"
+
+        ld a, 0xFF
+        ld (iy + FILE_SECTION_ID), a
+        ld (iy + FILE_SECTION_ID + 1), a
+        ld (iy + FILE_PREV_SECTION), a
+        ld (iy + FILE_PREV_SECTION + 1), a
+
+        xor a
+        ld (iy + FILE_STREAM), a
+
+        ld (iy + FILE_WORKING_SIZE), a
+        ld (iy + FILE_WORKING_SIZE + 1), a
+        ld (iy + FILE_WORKING_SIZE + 2), a
+
+        inc a ; Stream is flushed
+        ld (iy + FILE_WRITE_FLAGS), a ; TODO: Move flags around
+    pop ix
     pop de
-    ret
+    dec d
+    jp .done
 .outOfMemory:
             pop ix
             pop de
@@ -340,6 +365,9 @@ populateStreamBuffer:
         push de
         push hl
         push bc
+            ld hl, 0xFFFF
+            call cpHLBC
+            jr z, _
             ld a, b
             setBankA
             ld a, c
@@ -348,6 +376,20 @@ populateStreamBuffer:
             ld l, 0
             ld bc, KFS_BLOCK_SIZE
             push ix \ pop de
+            ldir
+        pop bc
+        pop hl
+        pop de
+        pop af
+        setBankA
+    pop af
+    ret
+_:          push ix \ pop de ; New blocks get to be 0xFF
+            ld h, d \ ld l, e
+            inc de
+            ld a, 0xFF
+            ld (hl), a
+            ld bc, KFS_BLOCK_SIZE
             ldir
         pop bc
         pop hl
@@ -457,10 +499,10 @@ _:  pop af
         call flush_withStream
         
         xor a
-        cp (ix + FILE_ENTRY_PAGE)
-        jr nz, .overwriteFile
         ld l, (ix + FILE_ENTRY_PTR)
-        ld h, (ix + FILE_ENTRY_PTR + 1) ; File name
+        ld h, (ix + FILE_ENTRY_PTR + 1)
+        cp (ix + FILE_ENTRY_PAGE)
+        jp nz, .overwriteFile
         ; Find the parent directory and extract the file name alone
         call stringLength
         inc bc
@@ -496,8 +538,31 @@ _:  pop af
             ld b, (ix + FILE_WORKING_SIZE + 1)
             ld l, (ix + FILE_SECTION_ID)
             ld h, (ix + FILE_SECTION_ID + 1)
-            push hl \ pop iy ; TODO: Traverse to find the first section ID
+            ; Traverse the sections to find the first
+            push af
+            push de
+            push hl
+_:              ld a, h
+                setBankA
+                ld a, l
+                rlca \ rlca
+                ld l, a
+                ld h, 0x40
+                ld e, (hl)
+                inc hl
+                ld d, (hl)
+                ex de, hl
+                ld de, 0x7FFF
+                call cpHLDE
+                jr z, _
+                inc sp \ inc sp \ push hl
+            jr -_
+_:          pop hl
+            pop de
+            pop af
+            push hl \ pop iy
         pop hl
+.resumeWrite:
         call createFileEntry
         jr nz, .wtf + 2
 
@@ -511,7 +576,6 @@ _:  pop af
             ld hl, activeFileStreams
             dec (hl)
         pop hl
-.overwriteFile: ; TODO
     pop af
     jp po, _
     ei
@@ -519,6 +583,44 @@ _:  pop af
     pop ix
     cp a
     ret
+.overwriteFile:
+        ld a, (ix + FILE_ENTRY_PAGE)
+        setBankA
+        ld a, fsModifiedFile
+        call unlockFlash
+        call writeFlashByte ; Mark old entry as modified
+        call lockFlash
+        ; Load appropriate values for createFileEntry
+        dec hl \ dec hl \ dec hl
+        ld e, (hl)
+        dec hl
+        ld d, (hl) ; Parent ID
+        push de
+            ; Grab file name, too
+            ld bc, -7
+            add hl, bc
+
+            ld bc, 0
+            ld de, kernelGarbage + 0x100
+_:          ld a, (hl)
+            ld (de), a
+            dec hl
+            inc de
+            inc bc
+            or a
+            jr nz, -_
+
+            ld l, (ix + FILE_SECTION_ID)
+            ld h, (ix + FILE_SECTION_ID + 1)
+            push hl \ pop iy
+
+            ex de, hl
+
+            ld a, (ix + FILE_WORKING_SIZE + 2)
+            ld c, (ix + FILE_WORKING_SIZE)
+            ld b, (ix + FILE_WORKING_SIZE + 1)
+        pop de
+        jp .resumeWrite
 .wtf:
     pop hl
     pop af
@@ -528,6 +630,47 @@ _:  pop af
     pop ix
     ld a, 'W'|'T'|'F'
     or 1
+    ret
+
+; Flushes writes and loads the next block
+advanceBlock:
+    call flush
+    ret nz
+    push ix
+    push hl
+    push bc
+    push af
+    ld a, i
+    push af
+    di
+        call getStreamEntry
+        ld l, (ix + FILE_SECTION_ID)
+        ld h, (ix + FILE_SECTION_ID + 1)
+        ld (ix + FILE_PREV_SECTION), l
+        ld (ix + FILE_PREV_SECTION + 1), h
+        ; Grab the next block
+        ld a, h
+        setBankA
+        ld a, l
+        rlca \ rlca \ inc a \ inc a
+        ld l, a
+        ld h, 0x40
+        ld c, (hl)
+        inc hl
+        ld b, (hl)
+        ld (ix + FILE_SECTION_ID), c
+        ld (ix + FILE_SECTION_ID + 1), b
+        ld l, (ix + FILE_BUFFER)
+        ld h, (ix + FILE_BUFFER + 1)
+        push hl \ pop ix
+        call populateStreamBuffer
+    pop af
+    jp po, _
+    ei
+_:  pop af
+    pop bc
+    pop hl
+    pop ix
     ret
 
 ;; flush [Filestreams]
@@ -549,13 +692,10 @@ flush:
         call getStreamEntry
         jr nz, _flush_fail
         bit 6, (ix + FILE_FLAGS)
-        jr z, _flush_fail ; Fail if not writable
+        jp z, _flush_exitEarly ; Do nothing if not writable
 _flush_withStream:
         bit 0, (ix + FILE_WRITE_FLAGS) ; Check if flushed
-        jr nz, .exitEarly
-        xor a
-        cp (ix + FILE_STREAM) ; Check to see if anything written to this block
-        jr z, .exitEarly
+        jp nz, _flush_exitEarly
         push ix
         push hl
         push bc
@@ -601,14 +741,60 @@ _flush_withStream:
                 pop hl
             pop de
             ; HL is new section ID, DE is header pointer
+.firstSection:
             push hl
-                ; Find out what we need to do - there are lots of edge cases
+                ; We have to check to see if the section we're editing is already allocated, and if
+                ; so, we have to reallocate it elsewhere.
+                ; Best case - current section ID is set to 0xFFFF
+                ld c, (ix + FILE_PREV_SECTION)
+                ld b, (ix + FILE_PREV_SECTION + 1)
+                res 7, b
+                ld (kernelGarbage), bc
+                ld bc, 0xFFFF
+                ld l, (ix + FILE_SECTION_ID)
+                ld h, (ix + FILE_SECTION_ID + 1)
+                call cpHLBC ; BC == 0xFFFF
+                jr z, _ ; Current section ID is 0xFFFF, so skip this
+                ; Grab the next section ID from the obsolete section
+                getBankA
+                push af
+                    ld a, h
+                    setBankA
+                    ld a, l
+                    rlca \ rlca \ inc a \ inc a
+                    ld l, a
+                    ld h, 0x40
+                    ld c, (hl)
+                    inc hl
+                    ld b, (hl)
+                pop af
+                setBankA
+_:              ld (kernelGarbage + 2), bc
+                ld bc, 4
+                ld hl, kernelGarbage
+                call writeFlashBuffer
+                ; Update previous section's header if needed
                 ld l, (ix + FILE_PREV_SECTION)
                 ld h, (ix + FILE_PREV_SECTION + 1)
                 ld bc, 0xFFFF
                 call cpHLBC
-                jp z, .firstSection
-            pop hl
+                jr z, _ ; "if needed"
+                ld a, h
+                setBankA
+                ld a, l
+                rlca \ rlca \ inc a \ inc a
+                ld l, a
+                ld h, 0x40
+                ex de, hl
+            pop hl \ push hl
+                ld (kernelGarbage), hl
+                ld hl, kernelGarbage
+                ld bc, 2
+                call writeFlashBuffer
+_:          pop hl
+            ; Load current section ID into file handle
+            ld (ix + FILE_SECTION_ID), l
+            ld (ix + FILE_SECTION_ID + 1), h
 .done:
             call lockFlash
         pop de
@@ -616,7 +802,7 @@ _flush_withStream:
         pop hl
         pop ix
         set 0, (ix + FILE_WRITE_FLAGS) ; Mark as flushed
-.exitEarly:
+_flush_exitEarly:
     pop af
     jp po, _
     ei
@@ -624,29 +810,6 @@ _:  pop af
     pop ix
     cp a
     ret
-.firstSection:
-        ; We know that the current section is the first section of the file
-        ; We have to check to see if the section we're editing is already allocated, and if
-        ; so, we have to reallocate it elsewhere.
-        ; Best case - current section ID is set to 0xFFFF
-        ld b, 0x7F
-        ld (kernelGarbage), bc
-        ld b, 0xFF
-        ld l, (iy + FILE_SECTION_ID)
-        ld h, (iy + FILE_SECTION_ID + 1)
-        call cpHLBC ; BC == 0xFFFF
-        jr z, _ ; Next section ID is 0x7FFF, so skip this
-        ; Grab the next section ID from the obsolete section
-        ; TODO
-_:      ld (kernelGarbage + 2), bc
-        ld bc, 4
-        ld hl, kernelGarbage
-        call writeFlashBuffer
-    pop hl
-    ; Load current section ID into file handle
-    ld (ix + FILE_SECTION_ID), l
-    ld (ix + FILE_SECTION_ID + 1), h
-    jp .done
 _flush_fail:
     pop af
     jp po, _

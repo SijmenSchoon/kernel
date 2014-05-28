@@ -315,6 +315,10 @@ _:  pop af
 ;; Outputs:
 ;;  A: Thread ID (on success), error code (on failure)
 ;;  Z: Set if successful, reset otherwise
+;; Notes:
+;;  Call this with interrupts disabled if you wish to manipulate the thread
+;;  before it starts (for example, to set the initial value of the registers).
+;;  See [[startThread]] for details.
 launchProgram:
     push bc
     ld a, i
@@ -430,6 +434,24 @@ exitThread:
         ld h, (ix + 1)
     pop af
     jp (hl)
+
+;; getEntryPoint [Threading]
+;;  Retrieves the entry point for the specified thread.
+;; Inputs:
+;;  A: Thread ID
+;; Outputs:
+;;  HL: Entry point
+getEntryPoint:
+    call getThreadEntry
+    ret nz
+    push de
+        inc hl
+        ld e, (hl)
+        inc hl
+        ld d, (hl)
+        ex de, hl
+    pop de
+    ret
 
 ;; getThreadEntry [Threading]
 ;;  Gets a pointer to the specified thread's entry in the thread table.

@@ -113,7 +113,7 @@ _:
 _:      push de
             ld de, 6
             sub 0x20
-            call DEMulA
+            call mul16By8To24
             ex de, hl
             ld hl, kernel_font
             add hl, de
@@ -166,7 +166,7 @@ _:
 _:      push de
             ld de, 6
             sub 0x20
-            call DEMulA
+            call mul16By8To24
             ex de, hl
             ld hl, kernel_font
             add hl, de
@@ -293,19 +293,21 @@ _:  pop af
 ;;  B: Left margin
 ;; Outputs:
 ;;  D, E: Advanced to position of the end of the string
+;;  HL: The next character that would have been drawn if the string hadn't run off-screen.
 ;; Notes:
 ;;  The left margin is only required if your string contains newlines or carriage returns.
 wrapStr:
-    push hl
     push af
 _:      ld a, (hl)
         or a
         jr z, _
         call wrapChar
+        ld a, e
+        cp MONO_LCD_HEIGHT
+        jr nc, _
         inc hl
         jr -_
 _:  pop af
-    pop hl
     ret
 
 ;; drawStrAND [Text]
@@ -417,7 +419,7 @@ measureChar:
     push af
         ld de, 6
         sub 0x20
-        call DEMulA
+        call mul16By8To24
         ex de, hl
         ld hl, kernel_font
         add hl, de
